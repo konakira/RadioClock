@@ -1,4 +1,6 @@
 # Prerequisites
+auth.h
+*.bak
 *.d
 
 # Object files
