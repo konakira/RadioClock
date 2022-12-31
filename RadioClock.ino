@@ -5,14 +5,6 @@
 // #include <esp_sleep.h> It was said that esp_deep_sleep.h will be deprecated
 // and esp_sleep.h should be instead, but it does not declare esp_deep_sleep_pd_config
 
-#define USE_BLYNK
-#ifdef USE_BLYNK
-#define BLYNK_PRINT Serial // Enables Serial Monitor
-#define BLYNK_MAX_SENDBYTES 256 // Default is 128
-#include <BlynkSimpleEsp32.h>
-#include <WidgetRTC.h>
-#endif
-
 class LED {
 public:
   LED(int p, bool initialOn = false) : pin(p), led(initialOn) {
@@ -64,74 +56,13 @@ LED blue(LED_BUILTIN);
 
 #include "auth.h"
 
-#ifdef USE_WIFI_MANAGER
-#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
 #include <Ticker.h>
-Ticker ticker;
-
-//WiFiManager
-//Local intialization. Once its business is done, there is no need to keep it around
-WiFiManager wifiManager;
-
-void tick()
-{
-  blue.flip();
-}
-
-//gets called when WiFiManager enters configuration mode
-void configModeCallback (WiFiManager *myWiFiManager) {
-  //entered config mode, make led toggle faster
-  ticker.attach(0.2, tick);
-}
-
-void connectWiFi()
-{
-  //set led pin as output
-  //  pinMode(BUILTIN_LED, OUTPUT);
-  // start ticker with 0.5 because we start in AP mode and try to connect
-  ticker.attach(0.5, tick);
-
-  //reset settings - for testing
-  //wifiManager.resetSettings();
-
-  //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
-  wifiManager.setAPCallback(configModeCallback);
-
-  //fetches ssid and pass and tries to connect
-  //if it does not connect it starts an access point with the specified name
-  //here  "AutoConnectAP"
-  //and goes into a blocking loop awaiting configuration
-  if (!wifiManager.autoConnect()) {
-    // do something here.
-  }
-
-  ticker.detach();
-  //keep LED on -> off
-  //digitalWrite(BUILTIN_LED, HIGH);
-  //  pinMode(BUILTIN_LED, INPUT);
-  blue.off();
-}
-#else //!USE_WIFI_MANAGER
-void connectWiFi()
-{
-  WiFi.begin(APNAME, APPASSWORD);
-}
-#endif
-
-char auth[] = BLYNKAUTH;
-char ssid[] = APNAME;
-char pass[] = APPASSWORD;
-#define VREMOTEBRIDGE V0 // for remote device
-#define VBRIDGE V9 // for this device
-#define VUPTIME V23
-BlynkTimer bTimer;
-WidgetRTC bRtc;
-WidgetBridge bridge_raspi(VBRIDGE); //Initiating Bridge Widget on VBRIDGE of this device
+Ticker timeout, interval;
 
 void writelog(String mesg)
 {
-  bridge_raspi.virtualWrite(VREMOTEBRIDGE, mesg);
-  BLYNK_LOG1(BLYNK_F(mesg));
+  // Shold write log to google or something.
+  Serial.println(mesg);
 }
 
 // WiFiに接続できない場合にDeep Sleepする
@@ -140,6 +71,8 @@ void gotoSleep(uint64_t);
 
 const unsigned long WIFI_TIMEOUT = 60000000ul; // 60sec
 hw_timer_t *hwTimer; // hardware timer for Wi-Fi timeout
+// Timer is documented below:
+// https://espressif-docs.readthedocs-hosted.com/projects/arduino-esp32/en/latest/api/timer.html
 
 void IRAM_ATTR onWiFiTimeout() {
   const uint64_t WIFI_RETRY_INTERVAL = 90000000ul; // 90sec
@@ -147,10 +80,33 @@ void IRAM_ATTR onWiFiTimeout() {
   gotoSleep(WIFI_RETRY_INTERVAL);
 }
 
-BLYNK_CONNECTED() {
-  bRtc.begin();
+char ssid[] = APNAME;
+char pass[] = APPASSWORD;
 
-  bridge_raspi.setAuthToken(BRIDGEAUTH); // Token of Raspberry Pi
+void connectWiFi()
+{
+  const unsigned waitTime = 500, waitTimeOut = 60000;
+  unsigned i;
+  static bool firstTime = true;
+  
+  hwTimer = timerBegin(0, 80, true); // for 80MHz
+  timerAttachInterrupt(hwTimer, &onWiFiTimeout, true);
+  timerAlarmWrite(hwTimer, WIFI_TIMEOUT, false);
+  timerAlarmEnable(hwTimer);
+
+  WiFi.begin(ssid, pass);
+  if (firstTime) {
+    // start ticker with 0.5 because we start in AP mode and try to connect
+
+    // indicating wifi trial would be good.
+  }
+  for (i = 0 ; WiFi.status() != WL_CONNECTED && i < waitTimeOut ; i += waitTime) {
+    delay(waitTime);
+  }
+  if (firstTime) {
+    // showing connection completion would be good.
+  }
+  firstTime = false;
 
   timerAlarmDisable(hwTimer);
   timerDetachInterrupt(hwTimer);
@@ -173,7 +129,7 @@ void turnOffRadio()
 
 void sendBit(unsigned b)
 {
-  unsigned long duration;
+  uint32_t duration;
 
   setPin(1);
 
@@ -186,13 +142,13 @@ void sendBit(unsigned b)
     duration = 500;
     break;
   }
-  bTimer.setTimeout(duration, turnOffRadio);
+  timeout.once_ms(duration, turnOffRadio);
 }
 
 void sendMarker()
 {
   setPin(1);
-  bTimer.setTimeout(200, turnOffRadio);
+  timeout.once_ms((uint32_t)200, turnOffRadio);
 }
 
 class RadioClockData {
@@ -542,6 +498,7 @@ void onTimer()
 bool byTimer = false;
 RTC_DATA_ATTR time_t targetWakeupTime = 0;
 RTC_DATA_ATTR time_t bootTime = 0;
+const time_t recentPastTime = 1500000000UL; // 2017/7/14 2:40:00 JST
 
 class Timer {
 public:
@@ -554,7 +511,6 @@ private:
 void mySecTimerEvent()
 {
   const unsigned long workingTime = (30UL * 60UL); // 30 minutes
-  const time_t recentPastTime = 1500000000UL; // 2017/7/14 2:40:00 JST
   time_t t = now();
 
   if (bootTime < recentPastTime && recentPastTime < t) {
@@ -567,7 +523,7 @@ void mySecTimerEvent()
       time_t sleepsec, sleepmin;
 
       // 稼働日数の記録
-      Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
+      // Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
 
       if ((t + 60 < targetWakeupTime) && byTimer) {
 	sleepsec = targetWakeupTime - t;
@@ -589,9 +545,6 @@ void mySecTimerEvent()
 	targetWakeupTime = t + sleepsec;
       }
 
-      // tell Blynk that this hardware will be disconnected from Blynk server
-      Blynk.disconnect();
-
       if (sleepmin < (24 * 60)) { // sleepminが24時間を超えてなければ
 	gotoSleep((uint64_t)sleepsec * (uint64_t)1000000ul);
 	// usec単位だとunsigned longは1時間11分で桁あふれしちゃう
@@ -609,11 +562,40 @@ void mySecTimerEvent()
 	writelog("RadioClock wave generator started.");
 
 	// 稼働日数の記録
-	Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
+	// Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
       }
       onTimer();
     }
   }
+}
+
+bool NTPSync()
+{
+  const unsigned long NTP_INTERVAL = (24 * 60 * 60 * 1000);
+  static unsigned long lastNTPconfiguration = 0;
+  bool retval = false;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    // check NTP
+    if (!lastNTPconfiguration || NTP_INTERVAL < millis() - lastNTPconfiguration) {
+      time_t t;
+      struct tm ti;
+
+      configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com", "ntp.jst.mfeed.ad.jp");
+      lastNTPconfiguration = millis();
+      for (t = 0 ; t < recentPastTime ; t = time(NULL)); // wait for NTP to synchronize
+      retval = true;
+
+      localtime_r(&t, &ti);
+      setTime(ti.tm_hour, ti.tm_min, ti.tm_sec, ti.tm_mday, 1 + ti.tm_mon, 1900 + ti.tm_year);
+
+      writelog("NTP Synchronized.");
+    }
+  }
+  return retval;
 }
 
 void setup()
@@ -632,14 +614,6 @@ void setup()
     byTimer = true;
   }
 
-  hwTimer = timerBegin(0, 80, true); // for 80MHz
-  timerAttachInterrupt(hwTimer, &onWiFiTimeout, true);
-  timerAlarmWrite(hwTimer, WIFI_TIMEOUT, false);
-  timerAlarmEnable(hwTimer);
-
-  Blynk.begin(auth, ssid, pass);
-  bTimer.setInterval(1000, mySecTimerEvent); // timer should be called every second
-
 #ifdef BUILTIN_LED
   Serial.print("BUILTIN_LED = ");
   Serial.println(BUILTIN_LED);
@@ -649,25 +623,12 @@ void setup()
   ledcSetup(radio, 40000, 1); // chan 0, freq = 40000, bitlength = 1(means duty rate = 50%
   ledcAttachPin(timePin, radio); // attach the channel to LED chan 0, set above
   ledcWrite(radio, 0);
-}
 
-static const unsigned long CONNECTION_DELAY = 5000; // try to reconnect every 5 seconds
-unsigned long lastConnectionAttempt;
+  NTPSync();
+
+  interval.attach_ms(1000, mySecTimerEvent); // timer should be called every second
+}
 
 void loop() 
 {
-  // check WiFi connection:
-  if (!Blynk.connected()) { // 主にLight Sleep用
-    if (millis() - lastConnectionAttempt < CONNECTION_DELAY) {
-      // better to delay() rather than to do empty loop
-      delay(CONNECTION_DELAY - (millis() - lastConnectionAttempt));
-    }
-
-    // attempt to connect to Wifi network:
-    Blynk.begin(auth, ssid, pass);
-    lastConnectionAttempt = millis();
-  }
-
-  Blynk.run();
-  bTimer.run();
 }
