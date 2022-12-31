@@ -1,0 +1,632 @@
+#include <TimeLib.h>
+
+#include <WiFi.h>
+#include <esp_deep_sleep.h>
+
+#define USE_BLYNK
+#ifdef USE_BLYNK
+#define BLYNK_PRINT Serial // Enables Serial Monitor
+#define BLYNK_MAX_SENDBYTES 256 // Default is 128
+#include <BlynkSimpleEsp32.h>
+#include <WidgetRTC.h>
+#endif
+
+#include <led.h>
+
+#ifdef BUILTIN_LED
+LED blue(BUILTIN_LED);
+#else
+LED blue(27);
+#endif
+
+//#define USE_WIFI_MANAGER
+
+#ifdef USE_WIFI_MANAGER
+#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
+#include <Ticker.h>
+Ticker ticker;
+
+//WiFiManager
+//Local intialization. Once its business is done, there is no need to keep it around
+WiFiManager wifiManager;
+
+void tick()
+{
+  blue.flip();
+}
+
+//gets called when WiFiManager enters configuration mode
+void configModeCallback (WiFiManager *myWiFiManager) {
+  //entered config mode, make led toggle faster
+  ticker.attach(0.2, tick);
+}
+
+#include "auth.h"
+
+void connectWiFi()
+{
+  //set led pin as output
+  //  pinMode(BUILTIN_LED, OUTPUT);
+  // start ticker with 0.5 because we start in AP mode and try to connect
+  ticker.attach(0.5, tick);
+
+  //reset settings - for testing
+  //wifiManager.resetSettings();
+
+  //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
+  wifiManager.setAPCallback(configModeCallback);
+
+  //fetches ssid and pass and tries to connect
+  //if it does not connect it starts an access point with the specified name
+  //here  "AutoConnectAP"
+  //and goes into a blocking loop awaiting configuration
+  if (!wifiManager.autoConnect()) {
+    // do something here.
+  }
+
+  ticker.detach();
+  //keep LED on -> off
+  //digitalWrite(BUILTIN_LED, HIGH);
+  //  pinMode(BUILTIN_LED, INPUT);
+  blue.off();
+}
+#else //!USE_WIFI_MANAGER
+void connectWiFi()
+{
+  WiFi.begin(APNAME, APPASSWORD);
+}
+#endif
+
+char auth[] = BLYNKAUTH;
+char ssid[] = APNAME;
+char pass[] = APPASSWORD;
+#define VREMOTEBRIDGE V0 // for remote device
+#define VBRIDGE V9 // for this device
+#define VUPTIME V23
+BlynkTimer bTimer;
+WidgetRTC bRtc;
+WidgetBridge bridge_raspi(VBRIDGE); //Initiating Bridge Widget on VBRIDGE of this device
+
+void writelog(String mesg)
+{
+  bridge_raspi.virtualWrite(VREMOTEBRIDGE, mesg);
+  BLYNK_LOG1(BLYNK_F(mesg));
+}
+
+// WiFiに接続できない場合にDeep Sleepする
+
+const unsigned long WIFI_TIMEOUT = 60000000ul; // 60sec
+hw_timer_t *hwTimer; // hardware timer for Wi-Fi timeout
+
+void IRAM_ATTR onWiFiTimeout() {
+  const uint64_t WIFI_RETRY_INTERVAL = 90000000ul; // 90sec
+
+  gotoSleep(WIFI_RETRY_INTERVAL);
+}
+
+BLYNK_CONNECTED() {
+  bRtc.begin();
+
+  bridge_raspi.setAuthToken(BRIDGEAUTH); // Token of Raspberry Pi
+
+  timerAlarmDisable(hwTimer);
+  timerDetachInterrupt(hwTimer);
+  timerEnd(hwTimer);
+}
+
+const int timePin = 25; // GPIO 25, for time output to 40kHz radio
+const int radio = 0;
+
+void setPin(int m)
+{
+  ledcWrite(radio, m ? 1 : 0);
+  // digitalWrite(timePin, m ? HIGH: LOW);
+}
+
+void turnOffRadio()
+{
+  setPin(0);
+}
+
+void sendBit(unsigned b)
+{
+  unsigned long duration;
+
+  setPin(1);
+
+  switch (b) {
+  case 0:
+    duration = 800;
+    break;
+    
+  default:
+    duration = 500;
+    break;
+  }
+  bTimer.setTimeout(duration, turnOffRadio);
+}
+
+void sendMarker()
+{
+  setPin(1);
+  bTimer.setTimeout(200, turnOffRadio);
+}
+
+class RadioClockData {
+public:
+  void setTime(time_t t);
+  void incrementMin();
+  void sendData(time_t sec);
+  void sendData2(time_t sec);
+
+private:
+  unsigned _year[2]; // BCDで記録。添え字が小さい方が下のケタ。
+  unsigned _yday[3];
+  unsigned _hour[2];
+  unsigned _min[2];
+  unsigned _dayOfWeek;
+  unsigned _minParity, _hourParity;
+  unsigned calcParity(unsigned d, unsigned b);
+} rcd;
+
+unsigned RadioClockData::calcParity(unsigned d, unsigned b)
+{
+  unsigned retval = 0;
+
+  while (0 < b--) {
+    retval ^= d;
+    d >>= 1;
+  }
+  return retval & 1;
+}
+
+void storeBCD(unsigned d, unsigned *buf, unsigned digits)
+{
+  while (0 < digits--) {
+    *buf++ = d % 10;
+    d /= 10;
+  }
+}
+
+// 掛け算や割り算など、時間がかかるかもしれない計算はここでやってしまう
+void RadioClockData::setTime(time_t t)
+{
+  struct tm timeInfo;
+
+  storeBCD(year(t), _year, 2);
+
+  gmtime_r(&t, &timeInfo);
+  storeBCD(timeInfo.tm_yday + 1, _yday, 3);
+
+  storeBCD(hour(t), _hour, 2);
+  storeBCD(minute(t), _min, 2);
+
+  _minParity = (calcParity(_min[0], 3) ^ calcParity(_min[1], 4));
+
+  _dayOfWeek = weekday(t) - 1;
+}
+
+void RadioClockData::incrementMin() {
+  unsigned temp;
+
+  _min[0]++; // 1分インクリメント
+  if (9 < _min[0]) { // 1ケタ目が10分以上になったらBCDの2ケタ目をインクリメント
+    _min[0] = 0;
+    _min[1]++;
+    if (5 < _min[1]) { // 分の2ケタ目が6以上になったら時間をインクリメント
+      _min[1] = 0;
+      unsigned h = _hour[1] * 10 + _hour[0]; // 時間はBCDのケタごとに判定するのが面倒なので一度戻す
+      h++;
+      if (23 < h) { // 24時以上になったら日付をインクリメント
+        _hour[0] = _hour[1] = 0;
+        unsigned y = _yday[2] * 100 + _yday[1] * 10 + _yday[0]; // 日付もケタごとに計算するのは面倒なので一度戻す
+        y++;
+        if (365 < y) { // 365日を超えたらうるう年の計算が面倒なのでnow()拾ってセットしなおす
+          time_t t = now();
+          setTime(t);
+          return;
+        }
+        storeBCD(y, _yday, 3);
+
+        if (6 < ++_dayOfWeek) { // 曜日を進める
+          _dayOfWeek = 0;
+        }
+      }
+      storeBCD(h, _hour, 2);
+    }
+  }
+  _hourParity = (calcParity(_hour[1], 2) ^ calcParity(_hour[0], 4));
+  _minParity = (calcParity(_min[1], 3) ^ calcParity(_min[0], 4));
+}
+
+void RadioClockData::sendData(time_t sec) 
+{
+  switch (sec) {
+  case 0:
+  case 9:
+  case 19:
+  case 29:
+  case 39:
+  case 49:
+  case 59:
+    sendMarker();
+    break;
+
+  case 4:
+  case 10:
+  case 11:
+  case 14:
+  case 20:
+  case 21:
+  case 24:
+  case 34:
+  case 35:
+  case 38: // SU1、予備ビット
+  case 40: // SU2
+  case 53: // LS1、うるう秒
+  case 54: // LS2
+  case 55:
+  case 56:
+  case 57:
+  case 58:
+    sendBit(0);
+    break;
+
+  case 1:
+    sendBit((_min[1] & 4) >> 2);
+    break;
+
+  case 2:
+    sendBit((_min[1] & 2) >> 1);
+    break;
+
+  case 3:
+    sendBit(_min[1] & 1);
+    break;
+
+  case 5:
+    sendBit((_min[0] & 8) >> 3);
+    break;
+
+  case 6:
+    sendBit((_min[0] & 4) >> 2);
+    break;
+
+  case 7:
+    sendBit((_min[0] & 2) >> 1);
+    break;
+
+  case 8:
+    sendBit(_min[0] & 1);
+    break;
+
+  case 12:
+    sendBit((_hour[1] & 2) >> 1);
+    break;
+
+  case 13:
+    sendBit(_hour[1] & 1);
+    break;
+
+  case 15:
+    sendBit((_hour[0] & 8) >> 3);
+    break;
+
+  case 16:
+    sendBit((_hour[0] & 4) >> 2);
+    break;
+
+  case 17:
+    sendBit((_hour[0] & 2) >> 1);
+    break;
+
+  case 18:
+    sendBit(_hour[0] & 1);
+    break;
+
+  case 22:
+    sendBit((_yday[2] & 2) >> 1);
+    break;
+
+  case 23:
+    sendBit(_yday[2] & 1);
+    break;
+
+  case 25:
+    sendBit((_yday[1] & 8) >> 3);
+    break;
+
+  case 26:
+    sendBit((_yday[1] & 4) >> 2);
+    break;
+
+  case 27:
+    sendBit((_yday[1] & 2) >> 1);
+    break;
+
+  case 28:
+    sendBit(_yday[1] & 1);
+    break;
+
+  case 30:
+    sendBit((_yday[0] & 8) >> 3);
+    break;
+
+  case 31:
+    sendBit((_yday[0] & 4) >> 2);
+    break;
+
+  case 32:
+    sendBit((_yday[0] & 2) >> 1);
+    break;
+
+  case 33:
+    sendBit(_yday[0] & 1);
+    break;
+
+  case 36:
+    sendBit(_hourParity);
+    break;
+
+  case 37:
+    sendBit(_minParity);
+    break;
+
+  case 41:
+    sendBit((_year[1] & 8) >> 3);
+    break;
+
+  case 42:
+    sendBit((_year[1] & 4) >> 2);
+    break;
+
+  case 43:
+    sendBit((_year[1] & 2) >> 1);
+    break;
+
+  case 44:
+    sendBit(_year[1] & 1);
+    break;
+
+  case 45:
+    sendBit((_year[0] & 8) >> 3);
+    break;
+
+  case 46:
+    sendBit((_year[0] & 4) >> 2);
+    break;
+
+  case 47:
+    sendBit((_year[0] & 2) >> 1);
+    break;
+
+  case 48:
+    sendBit(_year[0] & 1);
+    break;
+
+  case 50:
+    sendBit((_dayOfWeek & 4) >> 2);
+    break;
+
+  case 51:
+    sendBit((_dayOfWeek & 2) >> 1);
+    break;
+
+  case 52:
+    sendBit(_dayOfWeek & 1);
+    break;
+  }
+}
+
+void RadioClockData::sendData2(time_t sec) {
+  switch (sec) {
+  case 40:
+  case 41:
+  case 42:
+  case 43:
+  case 44:
+  case 45:
+  case 46:
+  case 47:
+  case 48:
+  case 49:
+  case 50:
+  case 51:
+  case 52:
+    sendBit(0);
+    break;
+
+  default:
+    sendData(sec);
+    break;
+  }
+}
+
+
+#define HOUR_MIN(x, y) (x * 60 + y)
+
+static unsigned long schedule[] = {HOUR_MIN(2, 0), HOUR_MIN(6, 0), HOUR_MIN(14, 0), HOUR_MIN(24, 99) /* means "end of array" */};
+static const unsigned long minutesInADay = HOUR_MIN(24, 0);
+
+unsigned long calcSleepMinutes()
+{
+  time_t t = now();
+  unsigned inMinute = HOUR_MIN(hour(t), minute(t));
+
+  for (unsigned long *nextWakeupTime = schedule ; *nextWakeupTime < minutesInADay ; nextWakeupTime++) {
+    if (inMinute < *nextWakeupTime) {
+      return *nextWakeupTime - inMinute;
+    }
+  }
+  return schedule[0] + minutesInADay - inMinute;
+}
+
+void gotoSleep(uint64_t sleeplen)
+{
+  esp_deep_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_OFF);
+  esp_sleep_enable_timer_wakeup(sleeplen);
+  esp_deep_sleep_start();
+  // esp_light_sleep_start(); // this call returns, unlike deep sleep
+}
+
+void onTimer()
+{
+  static int sec = -1, min = -1;
+  // It is safe to use digitalRead/Write here if you want to toggle an output
+
+  blue.flip();
+  
+  if (sec < 0) {
+    time_t t = now();
+    sec = second(t);
+    min = minute(t);
+    rcd.setTime(t + 1); // 時計、1秒ぐらい遅れてる感じなので1秒進めておく。
+  }
+  if (min == 15 || min == 45) {
+    rcd.sendData2(sec);
+  }
+  else {
+    rcd.sendData(sec);
+  }
+  if (59 < ++sec) {
+    // rcdの「分」をインクリメントする
+    sec = 0;
+    rcd.incrementMin(); // rcd.incrementMin() is performed in main loop in parallel.
+    if (59 < ++min) {
+      min = 0;
+    }
+  }
+}
+
+bool byTimer = false;
+RTC_DATA_ATTR time_t targetWakeupTime = 0;
+RTC_DATA_ATTR time_t bootTime = 0;
+
+class Timer {
+public:
+  Timer() { startTime = millis(); }
+  unsigned long lapTime() { return millis() - startTime; }
+private:
+  unsigned long startTime;
+} clockTimer;
+
+void mySecTimerEvent()
+{
+  const unsigned long workingTime = (30UL * 60UL); // 30 minutes
+  const time_t recentPastTime = 1500000000UL; // 2017/7/14 2:40:00 JST
+  time_t t = now();
+
+  if (bootTime < recentPastTime && recentPastTime < t) {
+    bootTime = t;
+  }
+  
+  if (recentPastTime < t) { // 時間がただしく設定されたら
+    if (((t + 60 < targetWakeupTime) && byTimer) || // 60秒以上早く起きていたら
+	workingTime < clockTimer.lapTime() / 1000) { // もしくは十分働いたら
+      time_t sleepsec, sleepmin;
+
+      // 稼働日数の記録
+      Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
+
+      if ((t + 60 < targetWakeupTime) && byTimer) {
+	sleepsec = targetWakeupTime - t;
+	// for debug
+	char buf[256];
+
+	sleepmin = sleepsec / 60;
+	snprintf(buf, 256, "RadioClock wave generator will sleep for %d min.", sleepmin);
+	writelog(buf);
+      }
+      else { // 十分働いたら
+	char buf[256];
+
+	sleepmin = calcSleepMinutes();
+	sleepsec = sleepmin * 60UL - second(t); // 指定時の正分に起きるため補正
+	snprintf(buf, 256,
+		 "RadioClock wave generator will sleep for %d min.", sleepmin);
+	writelog(buf);
+	targetWakeupTime = t + sleepsec;
+      }
+
+      // tell Blynk that this hardware will be disconnected from Blynk server
+      Blynk.disconnect();
+
+      if (sleepmin < (24 * 60)) { // sleepminが24時間を超えてなければ
+	gotoSleep((uint64_t)sleepsec * (uint64_t)1000000ul);
+	// usec単位だとunsigned longは1時間11分で桁あふれしちゃう
+      }
+      else {
+	targetWakeupTime = 0; // ここに来ることはほぼありえないと思う
+	// なんらかの原因でtargetWakeupTimeの値が壊れた時とかぐらいかな？
+	// ここにきたら1秒後に以下のelse節から続きが行われる
+      }
+    }
+    else {
+      static bool firstTime = true;
+      if (firstTime) {
+	firstTime = false;
+	writelog("RadioClock wave generator started.");
+
+	// 稼働日数の記録
+	Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
+      }
+      onTimer();
+    }
+  }
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println("");
+
+  blue.on(); // to indicate ESP turns on
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  
+  if (wakeup_reason == 3) {
+    // 1: caused by external signal using RTC_IO
+    // 2: caused by external signal using RTC_CNTL
+    // 3: caused by timer
+    byTimer = true;
+  }
+
+  hwTimer = timerBegin(0, 80, true); // for 80MHz
+  timerAttachInterrupt(hwTimer, &onWiFiTimeout, true);
+  timerAlarmWrite(hwTimer, WIFI_TIMEOUT, false);
+  timerAlarmEnable(hwTimer);
+
+  Blynk.begin(auth, ssid, pass);
+  bTimer.setInterval(1000, mySecTimerEvent); // timer should be called every second
+
+#ifdef BUILTIN_LED
+  Serial.print("BUILTIN_LED = ");
+  Serial.println(BUILTIN_LED);
+#endif
+
+  // prepare for the PWM to work in 40kHz
+  ledcSetup(radio, 40000, 1); // chan 0, freq = 40000, bitlength = 1(means duty rate = 50%
+  ledcAttachPin(timePin, radio); // attach the channel to LED chan 0, set above
+  ledcWrite(radio, 0);
+}
+
+static const unsigned long CONNECTION_DELAY = 5000; // try to reconnect every 5 seconds
+unsigned long lastConnectionAttempt;
+
+void loop() 
+{
+  // check WiFi connection:
+  if (!Blynk.connected()) { // 主にLight Sleep用
+    if (millis() - lastConnectionAttempt < CONNECTION_DELAY) {
+      // better to delay() rather than to do empty loop
+      delay(CONNECTION_DELAY - (millis() - lastConnectionAttempt));
+    }
+
+    // attempt to connect to Wifi network:
+    Blynk.begin(auth, ssid, pass);
+    lastConnectionAttempt = millis();
+  }
+
+  Blynk.run();
+  bTimer.run();
+}
