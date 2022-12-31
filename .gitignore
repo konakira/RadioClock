@@ -1,6 +1,10 @@
 # Prerequisites
+main.cpp
 auth.h
 *.bak
+.pio
+.vscode
+
 *.d
 
 # Object files
