@@ -2,6 +2,8 @@
 
 #include <WiFi.h>
 #include <esp_deep_sleep.h>
+// #include <esp_sleep.h> It was said that esp_deep_sleep.h will be deprecated
+// and esp_sleep.h should be instead, but it does not declare esp_deep_sleep_pd_config
 
 #define USE_BLYNK
 #ifdef USE_BLYNK
@@ -11,15 +13,56 @@
 #include <WidgetRTC.h>
 #endif
 
-#include <led.h>
+class LED {
+public:
+  LED(int p, bool initialOn = false) : pin(p), led(initialOn) {
+    pinMode(pin, OUTPUT);
+    if (initialOn) {
+      on();
+    }
+    else {
+      off();
+    }
+  }
+  ~LED() {
+    off();
+    pinMode(pin, INPUT);
+  }
+  void on() {
+    led = true;
+    digitalWrite(pin, HIGH);
+  }
+  void off() {
+    led = false;
+    digitalWrite(pin, LOW);
+  }
+  bool flip() { // 桁上がりを返す
+    if (led) {
+      off();
+      return true;
+    }
+    else {
+      on();
+      return false;
+    }
+  }
+private:
+  int pin;
+  bool led;
+};
+
+#define LED_BUILTIN 2
+// the above value is take from https://www.etechnophiles.com/esp32-blinking-led-tutorial-using-gpio-control-with-arduino-ide/
 
 #ifdef BUILTIN_LED
 LED blue(BUILTIN_LED);
 #else
-LED blue(27);
+LED blue(LED_BUILTIN);
 #endif
 
 //#define USE_WIFI_MANAGER
+
+#include "auth.h"
 
 #ifdef USE_WIFI_MANAGER
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
@@ -40,8 +83,6 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   //entered config mode, make led toggle faster
   ticker.attach(0.2, tick);
 }
-
-#include "auth.h"
 
 void connectWiFi()
 {
@@ -94,6 +135,8 @@ void writelog(String mesg)
 }
 
 // WiFiに接続できない場合にDeep Sleepする
+
+void gotoSleep(uint64_t);
 
 const unsigned long WIFI_TIMEOUT = 60000000ul; // 60sec
 hw_timer_t *hwTimer; // hardware timer for Wi-Fi timeout
@@ -207,8 +250,6 @@ void RadioClockData::setTime(time_t t)
 }
 
 void RadioClockData::incrementMin() {
-  unsigned temp;
-
   _min[0]++; // 1分インクリメント
   if (9 < _min[0]) { // 1ケタ目が10分以上になったらBCDの2ケタ目をインクリメント
     _min[0] = 0;
@@ -534,7 +575,7 @@ void mySecTimerEvent()
 	char buf[256];
 
 	sleepmin = sleepsec / 60;
-	snprintf(buf, 256, "RadioClock wave generator will sleep for %d min.", sleepmin);
+	snprintf(buf, 256, "RadioClock wave generator will sleep for %ld min.", sleepmin);
 	writelog(buf);
       }
       else { // 十分働いたら
@@ -543,7 +584,7 @@ void mySecTimerEvent()
 	sleepmin = calcSleepMinutes();
 	sleepsec = sleepmin * 60UL - second(t); // 指定時の正分に起きるため補正
 	snprintf(buf, 256,
-		 "RadioClock wave generator will sleep for %d min.", sleepmin);
+		 "RadioClock wave generator will sleep for %ld min.", sleepmin);
 	writelog(buf);
 	targetWakeupTime = t + sleepsec;
       }
