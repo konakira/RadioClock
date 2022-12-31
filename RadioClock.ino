@@ -44,15 +44,14 @@ private:
 };
 
 #define LED_BUILTIN 2
-// the above value is take from https://www.etechnophiles.com/esp32-blinking-led-tutorial-using-gpio-control-with-arduino-ide/
+// the above value is take from:
+// https://www.etechnophiles.com/esp32-blinking-led-tutorial-using-gpio-control-with-arduino-ide/
 
 #ifdef BUILTIN_LED
 LED blue(BUILTIN_LED);
 #else
 LED blue(LED_BUILTIN);
 #endif
-
-//#define USE_WIFI_MANAGER
 
 #include "auth.h"
 
@@ -61,7 +60,6 @@ Ticker timeout, interval;
 
 void writelog(String mesg)
 {
-  // Shold write log to google or something.
   Serial.println(mesg);
 }
 
