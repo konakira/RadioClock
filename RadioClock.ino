@@ -567,7 +567,34 @@ void mySecTimerEvent()
   }
 }
 
-bool NTPSync()
+void ShowDateTime(struct tm *pti)
+{
+
+  Serial.print(pti->tm_year + 1900);
+  Serial.print("/");
+  Serial.print(pti->tm_mon + 1);
+  Serial.print("/");
+  Serial.print(pti->tm_mday);
+  Serial.print(" ");
+  
+  Serial.print(pti->tm_hour);
+  if (pti->tm_min < 10) {
+    Serial.print(":0");
+  }
+  else {
+    Serial.print(":");
+  }
+  Serial.print(pti->tm_min);
+  if (pti->tm_sec < 10) {
+    Serial.print(":0");
+  }
+  else {
+    Serial.print(":");
+  }
+  Serial.println(pti->tm_sec);
+}
+
+bool NTPSync() // return true if nsynchronized.
 {
   const unsigned long NTP_INTERVAL = (24 * 60 * 60 * 1000);
   static unsigned long lastNTPconfiguration = 0;
@@ -577,6 +604,7 @@ bool NTPSync()
     connectWiFi();
   }
   if (WiFi.status() == WL_CONNECTED) {
+    delay(1000); // wait for the connection to become stable
     // check NTP
     if (!lastNTPconfiguration || NTP_INTERVAL < millis() - lastNTPconfiguration) {
       time_t t;
@@ -589,6 +617,8 @@ bool NTPSync()
 
       localtime_r(&t, &ti);
       setTime(ti.tm_hour, ti.tm_min, ti.tm_sec, ti.tm_mday, 1 + ti.tm_mon, 1900 + ti.tm_year);
+
+      ShowDateTime(&ti);
 
       writelog("NTP Synchronized.");
     }
@@ -622,7 +652,9 @@ void setup()
   ledcAttachPin(timePin, radio); // attach the channel to LED chan 0, set above
   ledcWrite(radio, 0);
 
-  NTPSync();
+  if (!NTPSync()) { // if not synchronized, then go sleep for 90 sec.
+    onWiFiTimeout();
+  }
 
   interval.attach_ms(1000, mySecTimerEvent); // timer should be called every second
 }
