@@ -594,17 +594,48 @@ void ShowDateTime(struct tm *pti)
   Serial.println(pti->tm_sec);
 }
 
+// reset time to 1970/1/1 or something.
+void resetTime()
+{
+  struct tm ti;
+
+  ti.tm_year = 70;
+  ti.tm_mon = 0;
+  ti.tm_mday = 1;
+  ti.tm_hour = 0;
+  ti.tm_min = 0;
+  ti.tm_sec = 59;
+  ti.tm_isdst = 0;
+  ti.tm_wday = ti.tm_yday = 0; // mktime() ignores them.
+
+  time_t t = mktime(&ti);
+
+  struct timeval tv;
+  tv.tv_sec = t;
+  tv.tv_usec = 0;
+  settimeofday(&tv, NULL);
+}
+
 bool NTPSync() // return true if nsynchronized.
 {
   const unsigned long NTP_INTERVAL = (24 * 60 * 60 * 1000);
   static unsigned long lastNTPconfiguration = 0;
   bool retval = false;
 
+  resetTime();
+  delay(1000); // wait for 1 sec, just in case
+
+  {
+    time_t t;
+    struct tm ti;
+    localtime_r(&t, &ti);
+    ShowDateTime(&ti);
+  }
+
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
   if (WiFi.status() == WL_CONNECTED) {
-    delay(1000); // wait for the connection to become stable
     // check NTP
     if (!lastNTPconfiguration || NTP_INTERVAL < millis() - lastNTPconfiguration) {
       time_t t;
