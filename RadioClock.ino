@@ -599,12 +599,12 @@ void resetTime()
 {
   struct tm ti;
 
-  ti.tm_year = 70;
-  ti.tm_mon = 0;
-  ti.tm_mday = 1;
+  ti.tm_year = 99;
+  ti.tm_mon = 11;
+  ti.tm_mday = 31;
   ti.tm_hour = 0;
   ti.tm_min = 0;
-  ti.tm_sec = 59;
+  ti.tm_sec = 0;
   ti.tm_isdst = 0;
   ti.tm_wday = ti.tm_yday = 0; // mktime() ignores them.
 
@@ -618,8 +618,6 @@ void resetTime()
 
 bool NTPSync() // return true if nsynchronized.
 {
-  const unsigned long NTP_INTERVAL = (24 * 60 * 60 * 1000);
-  static unsigned long lastNTPconfiguration = 0;
   bool retval = false;
 
   resetTime();
@@ -628,6 +626,7 @@ bool NTPSync() // return true if nsynchronized.
   {
     time_t t;
     struct tm ti;
+    t = time(NULL);
     localtime_r(&t, &ti);
     ShowDateTime(&ti);
   }
@@ -635,24 +634,25 @@ bool NTPSync() // return true if nsynchronized.
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
+  for (int i = 0 ; i < 30 && WiFi.status() != WL_CONNECTED ; i++) {
+    delay(1000);
+  }
   if (WiFi.status() == WL_CONNECTED) {
     // check NTP
-    if (!lastNTPconfiguration || NTP_INTERVAL < millis() - lastNTPconfiguration) {
-      time_t t;
-      struct tm ti;
+    time_t t;
+    struct tm ti;
 
-      configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com", "ntp.jst.mfeed.ad.jp");
-      lastNTPconfiguration = millis();
-      for (t = 0 ; t < recentPastTime ; t = time(NULL)); // wait for NTP to synchronize
-      retval = true;
+    configTime(9 * 3600, 0, "ntp.nict.jp", "time.google.com", "ntp.jst.mfeed.ad.jp");
 
-      localtime_r(&t, &ti);
-      setTime(ti.tm_hour, ti.tm_min, ti.tm_sec, ti.tm_mday, 1 + ti.tm_mon, 1900 + ti.tm_year);
+    for (t = 0 ; t < recentPastTime ; t = time(NULL)); // wait for NTP to synchronize
+    retval = true;
 
-      ShowDateTime(&ti);
+    localtime_r(&t, &ti);
+    setTime(ti.tm_hour, ti.tm_min, ti.tm_sec, ti.tm_mday, 1 + ti.tm_mon, 1900 + ti.tm_year);
 
-      writelog("NTP Synchronized.");
-    }
+    ShowDateTime(&ti);
+
+    writelog("NTP Synchronized.");
   }
   return retval;
 }
@@ -661,6 +661,9 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("");
+
+  configTime(9 * 3600, 0, nullptr); // set time zone as JST-9
+  // The above is performed without network connection.
 
   blue.on(); // to indicate ESP turns on
 
