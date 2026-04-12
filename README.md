@@ -2,6 +2,8 @@
 
 Radio generator for RadioClock in Japan
 
+[![PlatformIO CI](https://github.com/konakira/RadioClock/actions/workflows/build.yml/badge.svg)](https://github.com/konakira/RadioClock/actions)
+
 ![Running Image](images/board.png "Radio generator")
 
 ESP32を利用して、NTPサーバーから取得した正確な時刻をもとに日本の標準電波(JJY)を疑似的に生成・送信します。電波が届きにくい鉄筋コンクリートの室内でも、市販の電波時計を正確に合わせることができます。
