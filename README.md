@@ -12,31 +12,33 @@ ESP32を利用して、NTPサーバーから取得した正確な時刻をもと
 以下の図は、JJY信号を送信するためのアンテナ駆動回路です。ESP32のPWM出力を利用してMOSFETをスイッチングし、コイルを駆動させます。
 
 ```mermaid
-graph LR
-    subgraph ESP32 [ESP32 Dev Board]
-        PWM[GPIO 25 : PWM Out]
-        GND[GND]
-        VCC[3.3V or 5V]
+graph TD
+    %% 全体のスタイル調整
+    subgraph ESP32 ["📱 ESP32 Dev Board"]
+        PWM["GPIO 25 (PWM)"]
+        GND["GND"]
+        VCC["3.3V / 5V"]
     end
 
-    subgraph MOSFET [2SK2232 : Nch-MOSFET]
-        G[Gate]
-        D[Drain]
-        S[Source]
+    subgraph MOSFET ["🔌 MOSFET (2SK2232)"]
+        G["Gate"]
+        D["Drain"]
+        S["Source"]
     end
 
-    subgraph Antenna [JJY Antenna]
-        Coil[バーアンテナ / コイル]
+    subgraph Antenna ["📡 JJY Antenna"]
+        Coil["Bar Antenna"]
     end
 
-    %% 配線
-    PWM -- "1. 信号" --> G
-    VCC -- "2. 電源" --> Coil
-    Coil -- "3. 負荷" --> D
-    S -- "4. 接地" --> GND
+    %% 配線 (少し太めの線にする)
+    PWM ==> G
+    VCC --- Coil
+    Coil --- D
+    S --- GND
 
-    %% スタイル設定（VS Codeでも確実に表示される書き方）
-    style ESP32 fill:#e1f5fe,stroke:#03a9f4,stroke-width:2px
-    style MOSFET fill:#fff3e0,stroke:#ff9800,stroke-width:2px
-    style Antenna fill:#f9f9f9,stroke:#333,stroke-width:2px
+    %% 見た目を整えるスタイル指定
+    style ESP32 fill:#f0f7ff,stroke:#007bff,stroke-width:2px
+    style MOSFET fill:#fff9f0,stroke:#ff9800,stroke-width:2px
+    style Antenna fill:#f5f5f5,stroke:#333,stroke-width:2px
+
 
