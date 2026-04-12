@@ -1,9 +1,12 @@
 #include <TimeLib.h>
 
 #include <WiFi.h>
-#include <esp_deep_sleep.h>
+#include <WiFiMulti.h>
+
+//#include <esp_deep_sleep.h>
 // #include <esp_sleep.h> It was said that esp_deep_sleep.h will be deprecated
 // and esp_sleep.h should be instead, but it does not declare esp_deep_sleep_pd_config
+#include <esp_sleep.h>
 
 class LED {
 public:
@@ -43,8 +46,10 @@ private:
   bool led;
 };
 
+#ifndef LED_BUILTIN
 #define LED_BUILTIN 2
-// the above value is take from:
+#endif
+// the above value is taken from:
 // https://www.etechnophiles.com/esp32-blinking-led-tutorial-using-gpio-control-with-arduino-ide/
 
 #ifdef BUILTIN_LED
@@ -53,7 +58,15 @@ LED blue(BUILTIN_LED);
 LED blue(LED_BUILTIN);
 #endif
 
+// WiFi AP information should be stored at auth.h
+struct WifiCredential {
+  const char* ssid;
+  const char* pass;
+};
 #include "auth.h"
+const int wifi_count = sizeof(wifi_list) / sizeof(wifi_list[0]);
+WiFiMulti wifiMulti;
+
 
 #include <Ticker.h>
 Ticker timeout, interval;
@@ -78,9 +91,6 @@ void IRAM_ATTR onWiFiTimeout() {
   gotoSleep(WIFI_RETRY_INTERVAL);
 }
 
-char ssid[] = APNAME;
-char pass[] = APPASSWORD;
-
 void connectWiFi()
 {
   const unsigned waitTime = 500, waitTimeOut = 60000;
@@ -92,7 +102,7 @@ void connectWiFi()
   timerAlarmWrite(hwTimer, WIFI_TIMEOUT, false);
   timerAlarmEnable(hwTimer);
 
-  WiFi.begin(ssid, pass);
+  wifiMulti.run();
   if (firstTime) {
     // start ticker with 0.5 because we start in AP mode and try to connect
 
@@ -440,7 +450,11 @@ void RadioClockData::sendData2(time_t sec) {
 
 #define HOUR_MIN(x, y) (x * 60 + y)
 
-static unsigned long schedule[] = {HOUR_MIN(2, 0), HOUR_MIN(6, 0), HOUR_MIN(14, 0), HOUR_MIN(24, 99) /* means "end of array" */};
+#ifndef WAKEUP_SCHEDULE
+#define WAKEUP_SCHEDULE HOUR_MIN(2, 0), HOUR_MIN(6, 0), HOUR_MIN(14, 0)
+#endif
+
+static unsigned long schedule[] = {WAKEUP_SCHEDULE, HOUR_MIN(24, 99) /* means "end of array" */};
 static const unsigned long minutesInADay = HOUR_MIN(24, 0);
 
 unsigned long calcSleepMinutes()
@@ -458,10 +472,8 @@ unsigned long calcSleepMinutes()
 
 void gotoSleep(uint64_t sleeplen)
 {
-  esp_deep_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_OFF);
   esp_sleep_enable_timer_wakeup(sleeplen);
   esp_deep_sleep_start();
-  // esp_light_sleep_start(); // this call returns, unlike deep sleep
 }
 
 void onTimer()
@@ -681,11 +693,20 @@ void setup()
   Serial.println(BUILTIN_LED);
 #endif
 
+#ifndef JJY_FREQ
+#define JJY_FREQ 40000
+#endif
+  
   // prepare for the PWM to work in 40kHz
-  ledcSetup(radio, 40000, 1); // chan 0, freq = 40000, bitlength = 1(means duty rate = 50%
+  ledcSetup(radio, JJY_FREQ, 1); // chan 0, freq = 40000, bitlength = 1(means duty rate = 50%
   ledcAttachPin(timePin, radio); // attach the channel to LED chan 0, set above
   ledcWrite(radio, 0);
 
+  for (int i = 0; i < wifi_count; i++) {
+    wifiMulti.addAP(wifi_list[i].ssid, wifi_list[i].pass);
+  }  
+  wifiMulti.run();
+  
   if (!NTPSync()) { // if not synchronized, then go sleep for 90 sec.
     onWiFiTimeout();
   }

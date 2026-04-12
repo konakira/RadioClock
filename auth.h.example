@@ -1,0 +1,7 @@
+WifiCredential wifi_list[] = {
+  {"Wokwi-GUEST", ""},
+  {"APname1", "PW1"},
+  {"APname2", "Password2"},
+  {"APname3", "PassWord3"}
+};
+
