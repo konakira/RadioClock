@@ -138,7 +138,11 @@ void connectWiFi()
   timerEnd(hwTimer);
 }
 
-const int timePin = 25; // GPIO 25, for time output to 40kHz radio
+#ifndef TIMEPIN
+#define TIMEPIN 25 // GPIO 25, for time output to 40kHz radio
+#endif
+
+const int timePin = TIMEPIN;
 const int radio = 0;
 
 void setPin(int m)
@@ -745,6 +749,14 @@ void setup()
 
   // Matter未設定(ペアリング待ち)の時はDeep Sleepさせずに待機
   if (!Matter.isDeviceCommissioned()) {
+    Serial.println("\n==================================================");
+    Serial.println("Matter Pairing Required!");
+    Serial.print("Manual Setup Code: ");
+    Serial.println(Matter.getManualPairingCode());
+    Serial.print("QR Code URL: ");
+    Serial.println(Matter.getOnboardingQRCodeUrl());
+    Serial.println("==================================================\n");
+
     writelog("Waiting for Matter commissioning...");
     while (!Matter.isDeviceCommissioned()) { delay(100); }
   }
