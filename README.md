@@ -22,7 +22,7 @@ ESP32を利用して、NTPサーバーから取得した正確な時刻をもと
 ## 必要なハードウェア (Hardware Requirements)
 
 * **ESP32 開発ボード** (ESP32-Cなど、800円前後)
-* **Nch-MOSFET** (使用例: 2SK2232、100円ぐらい)
+* **Nch-MOSFET** (使用例: IRLU3410PBF、100円ぐらい)
 * **バーアンテナ/コイル** (フェライトバーが200円ぐらいで2種ポリウレタン銅線が千円前後、下記参考リンクの[Raspberry Piで作るJJYシミュレータ (Rabbit Note)](https://rabbit-note.com/2017/04/01/raspberry-pi-jjy-repeater/)の「アンテナの作成」にアンテナの作り方が書いてありますので参考にしてください)
 * **ブレッドボード**  (250円前後)
 
