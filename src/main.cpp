@@ -1,3 +1,10 @@
+#include <Arduino.h>
+
+#ifdef USE_MATTER
+#include <Matter.h>
+MatterContactSensor matterRadioStatus; // 動作状況を接触センサーとして通知
+#endif
+
 #include <TimeLib.h>
 
 #include <WiFi.h>
@@ -96,11 +103,19 @@ void connectWiFi()
   const unsigned waitTime = 500, waitTimeOut = 60000;
   unsigned i;
   static bool firstTime = true;
-  
+
+#if ESP_ARDUINO_VERSION_MAJOR < 3
+  // Core 2.x系 (従来のESP32)
   hwTimer = timerBegin(0, 80, true); // for 80MHz
   timerAttachInterrupt(hwTimer, &onWiFiTimeout, true);
   timerAlarmWrite(hwTimer, WIFI_TIMEOUT, false);
   timerAlarmEnable(hwTimer);
+#else
+  // Core 3.x系 (XIAO ESP32C6 / Matter)
+  hwTimer = timerBegin(1000000); // 1MHz (1us)
+  timerAttachInterrupt(hwTimer, &onWiFiTimeout);
+  timerAlarm(hwTimer, WIFI_TIMEOUT, false, 0); // false = one-shot
+#endif
 
   wifiMulti.run();
   if (firstTime) {
@@ -116,7 +131,9 @@ void connectWiFi()
   }
   firstTime = false;
 
+#if ESP_ARDUINO_VERSION_MAJOR < 3
   timerAlarmDisable(hwTimer);
+#endif
   timerDetachInterrupt(hwTimer);
   timerEnd(hwTimer);
 }
@@ -126,8 +143,11 @@ const int radio = 0;
 
 void setPin(int m)
 {
+#if ESP_ARDUINO_VERSION_MAJOR < 3
   ledcWrite(radio, m ? 1 : 0);
-  // digitalWrite(timePin, m ? HIGH: LOW);
+#else
+  ledcWrite(timePin, m ? 127 : 0); // Core 3.x系ではピン番号とDuty比(0-255)を直接指定
+#endif
 }
 
 void turnOffRadio()
@@ -554,6 +574,9 @@ void mySecTimerEvent()
 	writelog(buf);
 	targetWakeupTime = t + sleepsec;
       }
+#ifdef USE_MATTER
+      matterRadioStatus = false; // 動作終了(センサー開)を通知
+#endif      
 
       if (sleepmin < (24 * 60)) { // sleepminが24時間を超えてなければ
 	gotoSleep((uint64_t)sleepsec * (uint64_t)1000000ul);
@@ -573,6 +596,9 @@ void mySecTimerEvent()
 
 	// 稼働日数の記録
 	// Blynk.virtualWrite(VUPTIME, (now() - bootTime) / 3600.0 / 24.0); // day
+#ifdef USE_MATTER
+	matterRadioStatus = true; // 稼働開始(センサー閉)を通知
+#endif
       }
       onTimer();
     }
@@ -698,14 +724,31 @@ void setup()
 #endif
   
   // prepare for the PWM to work in 40kHz
+#if ESP_ARDUINO_VERSION_MAJOR < 3
   ledcSetup(radio, JJY_FREQ, 1); // chan 0, freq = 40000, bitlength = 1(means duty rate = 50%
   ledcAttachPin(timePin, radio); // attach the channel to LED chan 0, set above
   ledcWrite(radio, 0);
+#else
+  // Core 3.x系
+  ledcAttach(timePin, JJY_FREQ, 8); // 8bit解像度でアタッチ
+  ledcWrite(timePin, 0); // 初期は0(OFF)
+#endif
 
+#ifndef USE_MATTER
   for (int i = 0; i < wifi_count; i++) {
     wifiMulti.addAP(wifi_list[i].ssid, wifi_list[i].pass);
   }  
   wifiMulti.run();
+#else
+  Matter.begin();
+  matterRadioStatus.begin();
+
+  // Matter未設定(ペアリング待ち)の時はDeep Sleepさせずに待機
+  if (!Matter.isDeviceCommissioned()) {
+    writelog("Waiting for Matter commissioning...");
+    while (!Matter.isDeviceCommissioned()) { delay(100); }
+  }
+#endif
   
   if (!NTPSync()) { // if not synchronized, then go sleep for 90 sec.
     onWiFiTimeout();
