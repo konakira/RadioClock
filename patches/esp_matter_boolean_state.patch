@@ -1,0 +1,115 @@
+diff --git a/components/esp_matter/data_model/esp_matter_data_model.cpp b/components/esp_matter/data_model/esp_matter_data_model.cpp
+index 21047b0..c4e44f1 100644
+--- a/components/esp_matter/data_model/esp_matter_data_model.cpp
++++ b/components/esp_matter/data_model/esp_matter_data_model.cpp
+@@ -1106,15 +1106,8 @@ esp_err_t set_val(uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_
+         // this updates the value of attribute in the esp-matter storage
+         return attribute::set_val_internal(attr, val, call_callbacks);
+     }
+-
+-    // we can use DataModelProvider::WriteAttribute API for writable attributes
+-    if (flags & ATTRIBUTE_FLAG_WRITABLE) {
+-        return set_val_via_write_attribute(endpoint_id, cluster_id, attribute_id, val);
+-    }
+-
+-    // TODO: If not writable, we could use the cluster-specific setter API to update the value
+-    //       with the code-driven effort, we can get the cluster object and call the setter API
+-    return ESP_ERR_NOT_SUPPORTED;
++    // Use DataModelProvider::WriteAttribute API for MANAGED_INTERNALLY attributes
++    return set_val_via_write_attribute(endpoint_id, cluster_id, attribute_id, val);
+ }
+ 
+ esp_err_t set_val(attribute_t *attribute, esp_matter_attr_val_t *val, bool call_callbacks)
+diff --git a/components/esp_matter/data_model/generated/clusters/boolean_state/boolean_state.cpp b/components/esp_matter/data_model/generated/clusters/boolean_state/boolean_state.cpp
+index 2ee4779..3bbb059 100644
+--- a/components/esp_matter/data_model/generated/clusters/boolean_state/boolean_state.cpp
++++ b/components/esp_matter/data_model/generated/clusters/boolean_state/boolean_state.cpp
+@@ -45,7 +45,7 @@ namespace boolean_state {
+ namespace attribute {
+ attribute_t *create_state_value(cluster_t *cluster, bool value)
+ {
+-    return esp_matter::attribute::create(cluster, StateValue::Id, ATTRIBUTE_FLAG_NONE, esp_matter_bool(value));
++    return esp_matter::attribute::create(cluster, StateValue::Id, ATTRIBUTE_FLAG_MANAGED_INTERNALLY, esp_matter_bool(value));
+ }
+ 
+ } /* attribute */
+diff --git a/components/esp_matter/data_model_provider/clusters/boolean_state/integration.cpp b/components/esp_matter/data_model_provider/clusters/boolean_state/integration.cpp
+index 43df8e4..df34ee5 100644
+--- a/components/esp_matter/data_model_provider/clusters/boolean_state/integration.cpp
++++ b/components/esp_matter/data_model_provider/clusters/boolean_state/integration.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include <app/ClusterCallbacks.h>
+ #include <app/clusters/boolean-state-server/BooleanStateCluster.h>
++#include <app/data-model-provider/OperationTypes.h>
+ #include <data_model_provider/esp_matter_data_model_provider.h>
+ #include <unordered_map>
+ #include "integration.h"
+@@ -21,9 +22,37 @@
+ using namespace chip;
+ using namespace chip::app;
+ using namespace chip::app::Clusters;
++using namespace chip::app::DataModel;
++using namespace chip::Protocols::InteractionModel;
+ 
+ namespace {
+-std::unordered_map<EndpointId, LazyRegisteredServerCluster<BooleanStateCluster>> gServers;
++
++// Extends BooleanStateCluster to support internal writes from attribute::update().
++// DefaultServerCluster::WriteAttribute returns UnsupportedWrite by default, which
++// blocks the set_val_via_write_attribute path used for ATTRIBUTE_FLAG_MANAGED_INTERNALLY.
++class ESPMatterBooleanStateCluster : public BooleanStateCluster
++{
++public:
++    using BooleanStateCluster::BooleanStateCluster;
++
++    ActionReturnStatus WriteAttribute(const WriteAttributeRequest & request,
++                                      AttributeValueDecoder & decoder) override
++    {
++        // Only allow internal writes (from attribute::update / set_val_via_write_attribute).
++        // External OTA writes are rejected per Matter spec (StateValue is read-only for clients).
++        if (request.path.mAttributeId == BooleanState::Attributes::StateValue::Id &&
++            request.operationFlags.Has(OperationFlags::kInternal))
++        {
++            bool newValue;
++            ReturnErrorOnFailure(decoder.Decode(newValue));
++            SetStateValue(newValue);
++            return Status::Success;
++        }
++        return DefaultServerCluster::WriteAttribute(request, decoder);
++    }
++};
++
++std::unordered_map<EndpointId, LazyRegisteredServerCluster<ESPMatterBooleanStateCluster>> gServers;
+ 
+ } // namespace
+ 
+diff --git a/components/esp_matter/data_model_provider/esp_matter_data_model_provider.cpp b/components/esp_matter/data_model_provider/esp_matter_data_model_provider.cpp
+index fc976bc..4a9d43f 100644
+--- a/components/esp_matter/data_model_provider/esp_matter_data_model_provider.cpp
++++ b/components/esp_matter/data_model_provider/esp_matter_data_model_provider.cpp
+@@ -585,8 +585,9 @@ ActionReturnStatus provider::WriteAttribute(const WriteAttributeRequest &request
+     VerifyOrReturnValue(metadata != nullptr, Protocols::InteractionModel::Status::Failure);
+ 
+     esp_matter_attr_val_t val = esp_matter_invalid(nullptr);
+-    VerifyOrReturnValue(attribute::get_val_internal(attribute, &val) == ESP_OK,
+-                        Protocols::InteractionModel::Status::Failure);
++    val.type = attribute::get_val_type(attribute);
++    attribute::get_val_internal(attribute, &val); // ignore error for MANAGED_INTERNALLY attributes
++    
+     attribute_data_decode_buffer decoded_buffer(val.type);
+     ReturnErrorOnFailure(decoder.Decode(decoded_buffer));
+ 
+diff --git a/device_hal/device/esp32c6_devkit_c/device.c b/device_hal/device/esp32c6_devkit_c/device.c
+index 30f7d3c..eb02d7d 100644
+--- a/device_hal/device/esp32c6_devkit_c/device.c
++++ b/device_hal/device/esp32c6_devkit_c/device.c
+@@ -17,7 +17,7 @@
+ #include <driver/gpio.h>
+ #include <led_driver.h>
+ 
+-#define LED_GPIO_PIN GPIO_NUM_8
++#define LED_GPIO_PIN GPIO_NUM_15
+ #define LED_CHANNEL 0 /* RMT_CHANNEL_0 */
+ #define BUTTON_GPIO_PIN GPIO_NUM_9
+ 
