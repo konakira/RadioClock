@@ -3,7 +3,7 @@
 JJY 模擬電波（40kHz）を発振する ESP32-C6 向けファームウェアです。
 Wi-Fi 接続・時刻同期を Matter プロトコルで行います。
 
-Arduino 版のオリジナルコードは [main ブランチ](https://github.com/konakira/RadioClock/tree/main) にあります。
+Arduino 版のオリジナルコードは [RadioClock リポジトリ（main ブランチ）](https://github.com/konakira/RadioClock) にあります。
 
 ## 動作概要
 
