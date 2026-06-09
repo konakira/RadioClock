@@ -67,6 +67,10 @@ $$
 本装置は、アンテナ付近の極めて限定された範囲(およそ3m以下)でのみ電波時計を動作させることを目的としています。
 電波法に定める「微弱無線局」の規定(電界強度の許容値)を超えないよう、アンテナの巻き数や出力を調整し、周囲の通信を妨害しないよう十分注意して使用してください。
 
+## Matter版について
+
+Apple Homeに追加可能なMatter版も作りました。[こちら](https://github.com/konakira/RadioClock/tree/esp-matter)をご参照ください。
+
 ## 参考リンク
 
 * **[Raspberry Piで作るJJYシミュレータ (Rabbit Note)](https://rabbit-note.com/2017/04/01/raspberry-pi-jjy-repeater/)**:
