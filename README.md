@@ -31,6 +31,15 @@ ESP32を利用して、NTPサーバーから取得した正確な時刻をもと
 
 ![Circuit](images/circuit.png "Cirquit")
 
+### LC直列共振回路
+
+回路図を書いた後にLC直列共振回路にすることで波形が整うことを勉強しました。私が作ったアンテナのインダクタンスを測ったところ13mHほどでしたので、1200pFのコンデンサーをアンテナの端子の両端をまたぐように入れてみたところいい感じです。以下の式の$f$が東日本なら40kHz、西日本なら60kHzになるようなコンデンサー$C$を選んで追加するとよいでしょう。
+
+$$
+f = \frac{1}{2\pi\sqrt{LC}}
+$$
+
+![Running Image](images/board-c6.png "Radio generator with C")
 
 ### 配線手順 (Wiring)
 
