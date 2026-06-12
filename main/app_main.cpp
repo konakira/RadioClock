@@ -45,7 +45,7 @@ static const char *TAG = "radio_clock";
 
 #define HOUR_MIN(h, m)  ((uint32_t)((h) * 60 + (m)))
 static const uint32_t k_schedule[] = {
-    HOUR_MIN(2, 0), HOUR_MIN(4, 0), HOUR_MIN(5, 0)
+    HOUR_MIN(2, 0), HOUR_MIN(6, 0), HOUR_MIN(14, 0)
 };
 static const size_t k_schedule_count = sizeof(k_schedule) / sizeof(k_schedule[0]);
 
@@ -465,31 +465,13 @@ static int  s_jjy_min = 0;
 
 static void one_second_tick(void *)
 {
-    if (s_going_to_sleep || s_ntp_needed) return;
+    if (s_going_to_sleep) return;
 
     time_t t = time(NULL);
 
-    // 未同期: WiFiイベントで即時トリガーされるが、取りこぼし時は30秒でフォールバック
-    if (t < kMinValidTime) {
-        int64_t elapsed = (esp_timer_get_time() - s_timeout_start_us) / 1000000LL;
-        if (elapsed > NTP_TRIGGER_S && !s_ntp_needed) {
-            ESP_LOGW(TAG, "NTP fallback triggered (%llds)", (long long)elapsed);
-            s_ntp_needed = true;
-        }
-        return;
-    }
-
-    // 初回の有効時刻: 発振開始
+    // 初回: 発振開始（Phase 1完了後にタイマーが起動されるため時刻は常に有効）
     if (!s_time_initialized) {
         s_time_initialized = true;
-
-        if (s_by_timer && s_target_wakeup_time > 0 && t + 60 < s_target_wakeup_time) {
-            uint64_t remain_s = (uint64_t)(s_target_wakeup_time - t);
-            ESP_LOGI(TAG, "Early wakeup, re-sleep %llu s", remain_s);
-            s_sleep_us = remain_s * 1000000ULL;
-            s_going_to_sleep = true;
-            return;
-        }
 
         time_t jst_t = t + JST_OFFSET_S;
         struct tm jst_tm;
@@ -631,9 +613,8 @@ extern "C" void app_main()
     s_by_timer         = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
     s_timeout_start_us = esp_timer_get_time();
 
-    // Deep Sleepからの復帰でない場合はRTCの古い時刻をクリア
-    // （ファクトリーリセット後などに前回の時刻が残っていてJJYが誤起動するのを防ぐ）
-    if (!s_by_timer) {
+    // 内部RTCは精度が悪いため起床理由によらず常にクリアし、Matter/NTP同期を待つ
+    {
         struct timeval zero = {0, 0};
         settimeofday(&zero, NULL);
     }
@@ -742,7 +723,7 @@ extern "C" void app_main()
         ESP_LOGI(TAG, "Boot button: hold %ds for factory reset", FACTORY_RESET_PRESS_MS / 1000);
     }
 
-    // 1秒タイマー開始
+    // 1秒タイマー作成（開始はPhase 1完了後）
     esp_timer_create_args_t sec_args = {
         .callback        = one_second_tick,
         .arg             = NULL,
@@ -751,30 +732,48 @@ extern "C" void app_main()
         .skip_unhandled_events = true,
     };
     esp_timer_create(&sec_args, &s_sec_timer);
-    esp_timer_start_periodic(s_sec_timer, 1000000);
 
     ESP_LOGI(TAG, "RadioClock ready | ep=%d gpio=%d freq=%dHz by_timer=%d",
              s_endpoint_id, JJY_GPIO, JJY_FREQ, (int)s_by_timer);
 
-    // メインループ
+    // Phase 1: 時刻同期待ち + 早起きチェック（タイマー開始前）
     while (!s_going_to_sleep) {
-        if (s_ntp_needed) {
-            // 1秒タイマーを止めて NTP を試みる（ブロッキング）
-            esp_timer_stop(s_sec_timer);
-            bool ok = try_ntp_sync();
-            if (ok) {
-                // 同期成功: タイムアウト基点をリセットしてタイマー再開
-                // one_second_tick が次のティックで正しい時刻を見つけて発振を開始する
-                s_timeout_start_us = esp_timer_get_time();
-                s_ntp_needed = false;
-                esp_timer_start_periodic(s_sec_timer, 1000000);
-            } else {
-                // NTP も失敗: 90秒スリープして再試行
-                s_sleep_us = WIFI_RETRY_US;
-                s_going_to_sleep = true;
+        time_t t = time(NULL);
+        if (t < kMinValidTime) {
+            int64_t elapsed = (esp_timer_get_time() - s_timeout_start_us) / 1000000LL;
+            if (elapsed > NTP_TRIGGER_S && !s_ntp_needed) {
+                ESP_LOGW(TAG, "NTP fallback triggered (%llds)", (long long)elapsed);
+                s_ntp_needed = true;
             }
+            if (s_ntp_needed) {
+                bool ok = try_ntp_sync();
+                if (ok) {
+                    s_timeout_start_us = esp_timer_get_time();
+                    s_ntp_needed = false;
+                } else {
+                    s_sleep_us = WIFI_RETRY_US;
+                    s_going_to_sleep = true;
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // 時刻有効: 早起きチェック
+        if (s_by_timer && s_target_wakeup_time > 0 && t + 60 < s_target_wakeup_time) {
+            uint64_t remain_s = (uint64_t)(s_target_wakeup_time - t);
+            ESP_LOGI(TAG, "Early wakeup, re-sleep %llu s", remain_s);
+            s_sleep_us = remain_s * 1000000ULL;
+            s_going_to_sleep = true;
+        }
+        break;
+    }
+
+    // Phase 2: 発振（早起きでなければタイマー開始）
+    if (!s_going_to_sleep) {
+        esp_timer_start_periodic(s_sec_timer, 1000000);
+        while (!s_going_to_sleep) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
     }
 
     // Deep Sleep 前処理
